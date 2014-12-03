@@ -10,17 +10,6 @@
 #
 # where <site> is the site name you used when you first created the host.
 #
-# WHAT'S NEW IN v1.34
-#
-# - Fix for using the GitHub API to check for new releases.
-#
-# WHAT'S NEW IN v1.33
-#
-# - Edit functionality added, `sudo virtualhost.sh --edit example.dev` opens
-#   the example.dev VirtualHost in your $EDITOR.
-# - Now uses the GitHub API to check for new releases.
-# - Checking for new releases is only done once per hour.
-#
 # WHAT'S NEW IN v1.32
 #
 # - Moved the project to a GitHub organization:
@@ -180,7 +169,7 @@
 # by Patrick Gibson <patrick@patrickg.com>
 #================================================================================
 # Don't change this!
-version="1.34"
+version="1.32"
 #
 
 # No point going any farther if we're not running correctly...
@@ -208,11 +197,12 @@ fi
 # to change this, like to how Apple does things by default, uncomment the
 # following line:
 #
-#DOC_ROOT_PREFIX="/Library/WebServer/Documents"
+#$DOC_ROOT_PREFIX="/Users/osrecio/Sites"
 
 # Configure the apache-related paths
 #
 : ${APACHE_CONFIG:="/private/etc/apache2"}
+: ${DEFAULT_LOG:="/private/var/log/apache2"}
 : ${APACHECTL:="/usr/sbin/apachectl"}
 
 # If you wish to change the default application that gets launched after the
@@ -243,7 +233,7 @@ fi
 
 # If you do not want to be prompted, but you do always want to have the site-
 # specific logs folder, set PROMPT_FOR_LOGS="no" and enable this:
-: ${ALWAYS_CREATE_LOGS:="yes"}
+: ${ALWAYS_CREATE_LOGS:="no"}
 
 # By default, log files will be created in DOCUMENT_ROOT/logs. If you wish to
 # override this to a static location, you can do so here.
@@ -286,7 +276,7 @@ fi
 
 # By default, we'll write out an index.html file in the DOCUMENT_ROOT if one
 # is not already present.
-: ${CREATE_INDEX:="yes"}
+: ${CREATE_INDEX:="no"}
 
 # You can now store your configuration directions in a ~/.virtualhost.sh.conf
 # file so that you can download new versions of the script without having to
@@ -329,7 +319,7 @@ create_virtualhost()
     log=""
     if [ -n "$LOG_FOLDER" ]; then
       # would love a pure shell way to do this, but sed makes it oh so hard
-      LOG_FOLDER=`ruby -e "puts File.expand_path('$LOG_FOLDER'.gsub(/__DOCUMENT_ROOT__/, '$2'))"`
+      LOG_FOLDER= ${DEFAULT_LOG}
       log_folder_path=$LOG_FOLDER
       access_log="${log_folder_path}/access_log-$VIRTUALHOST"
       error_log="${log_folder_path}/error_log-$VIRTUALHOST"
@@ -371,8 +361,8 @@ __EOT
 
   cat << __EOF >$APACHE_CONFIG/virtualhosts/$VIRTUALHOST
 # Created $date
-<VirtualHost *:$APACHE_PORT>
-  DocumentRoot "$2"
+<VirtualHost $VIRTUALHOST:$APACHE_PORT>
+  DocumentRoot "$DOC_ROOT_PREFIX/$2"
   ServerName $VIRTUALHOST
   $SERVER_ALIAS
 
@@ -380,20 +370,11 @@ __EOT
 
   $DIRECTORY
 
-  ${log}CustomLog "${access_log}" combined
-  ${log}ErrorLog "${error_log}"
+  CustomLog "${DEFAULT_LOG}/$VIRTUALHOST-access_log" combined
+  ErrorLog "${DEFAULT_LOG}/$VIRTUALHOST-error_log"
 
 </VirtualHost>
 __EOF
-}
-
-edit_virtualhost()
-{
-  if [ -e $APACHE_CONFIG/virtualhosts/$VIRTUALHOST ]; then
-    $EDITOR $APACHE_CONFIG/virtualhosts/$VIRTUALHOST
-  else
-    /bin/echo "VirtualHost $VIRTUALHOST not found."
-  fi
 }
 
 cleanup()
@@ -425,23 +406,8 @@ checkyesno()
 
 version_check()
 {
-  # Only check for a new version once every 60 minutes.
-  current_time=`date +%s`
-  last_update_check_file="${HOME_PARTITION}/$USER/.virtualhost.sh/last_update_check"
-  if [ -e "$last_update_check_file" ]; then
-    last_checked=`cat "$last_update_check_file"`
-    due_for_a_check=`/bin/echo "$last_checked < ($current_time - 3600)" | /usr/bin/bc`
-    if [ $due_for_a_check -eq 0 ]; then
-      return 0
-    fi
-  elif [ ! -d "${HOME_PARTITION}/$USER/.virtualhost.sh" ]; then
-    # Set up the last update check directory if it's not there yet.
-    mkdir "${HOME_PARTITION}/$USER/.virtualhost.sh"
-  fi
-
   /bin/echo -n "Checking for updates... "
-  current_version=`curl --silent https://api.github.com/repos/virtualhost/virtualhost.sh/releases | grep tag_name -m 1 | awk '{print $2}' | sed -e 's/[^0-9.]//g'`
-  /bin/echo $current_time > "$last_update_check_file"
+  current_version=`dig +tries=1 +time=1 +retry=0 txt virtualhost.patrickgibson.com | grep -e '^virtualhost' | awk '{print $5}' | sed -e 's/"//g'`
 
   # See if we have the latest version
   if [ -n "$current_version" ]; then
@@ -500,6 +466,10 @@ if (( $APACHE_MAJOR_VERSION < 2 )); then
   exit 1
 fi
 
+if [ -z $SKIP_VERSION_CHECK ]; then
+  version_check
+fi
+
 # catch Ctrl-C
 #trap 'cleanup' 2
 
@@ -536,16 +506,11 @@ if [ -z $DOC_ROOT_PREFIX ]; then
   DOC_ROOT_PREFIX="${HOME_PARTITION}/$USER/Sites"
 fi
 
-if [ -z $SKIP_VERSION_CHECK ]; then
-  version_check
-fi
-
 usage()
 {
   cat << __EOT
 Usage: sudo virtualhost.sh <name> [<optional path>]
        sudo virtualhost.sh --list
-       sudo virtualhost.sh --edit <name>
        sudo virtualhost.sh --delete <name>
    where <name> is the one-word name you'd like to use. (e.g. mysite)
 
@@ -580,15 +545,6 @@ else
     fi
 
     exit
-  elif [ "$1" = "--edit" ]; then
-    if [ -z $2 ]; then
-      usage
-    else
-      VIRTUALHOST=`echo $2|sed -e 's/\///g'`
-      edit_virtualhost
-
-      exit
-    fi
   else
     VIRTUALHOST=`echo $1|sed -e 's/\///g'`
     FOLDER=`echo $2 | sed -e 's/\/*$//'`
@@ -741,7 +697,7 @@ if ! grep -q -E "^NameVirtualHost \*:$APACHE_PORT" $APACHE_CONFIG/httpd.conf ; t
 
   /bin/echo "httpd.conf not ready for virtual hosting. Fixing..."
   cp $APACHE_CONFIG/httpd.conf $APACHE_CONFIG/httpd.conf.original
-  /bin/echo "NameVirtualHost *:$APACHE_PORT" >> $APACHE_CONFIG/httpd.conf
+  #/bin/echo "NameVirtualHost *:$APACHE_PORT" >> $APACHE_CONFIG/httpd.conf
 
   if [ ! -d $APACHE_CONFIG/virtualhosts ]; then
     mkdir $APACHE_CONFIG/virtualhosts
@@ -879,7 +835,6 @@ if [ -z "$FOLDER" ]; then
           read response
         else
           response="Y"
-          echo $response
         fi
         if checkyesno ${response} ; then
           FOLDER=$DOC_ROOT_FOLDER_MATCH/public
@@ -907,13 +862,13 @@ if [ -z "$FOLDER" ]; then
 fi
 
 # Create the folder if we need to...
-if [ ! -d "${FOLDER}" ]; then
+if [ ! -d "$DOC_ROOT_PREFIX/${FOLDER}" ]; then
   /bin/echo -n "  + Creating folder ${FOLDER}... "
   su $USER -c "mkdir -p $FOLDER"
 
   # Error out if the folder was not created.
-  if [ ! -d "${FOLDER}" ]; then
-    /bin/echo "  # Fatal: could not create ${FOLDER}"
+  if [ ! -d "$DOC_ROOT_PREFIX/${FOLDER}" ]; then
+    /bin/echo "  # Fatal: could not create $DOC_ROOT_PREFIX${FOLDER}"
     exit 1
   fi
   /bin/echo "done"
